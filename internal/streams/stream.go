@@ -62,6 +62,7 @@ func (s *Stream) SetSource(source string) {
 }
 
 func (s *Stream) RemoveConsumer(cons core.Consumer) {
+	// Stop the consumer first - this should close all associated senders/receivers
 	_ = cons.Stop()
 
 	s.mu.Lock()
@@ -73,7 +74,9 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
 	}
 	s.mu.Unlock()
 
-	s.stopProducers()
+	// Use a goroutine to avoid blocking the caller (e.g., WebRTC state change callback)
+	// This prevents deadlocks when RemoveConsumer is called from within a callback
+	go s.stopProducers()
 }
 
 func (s *Stream) AddProducer(prod core.Producer) {

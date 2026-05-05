@@ -66,8 +66,12 @@ func (n *Node) Close() {
 			parent.Close()
 		}
 	} else {
-		for _, childs := range n.childs {
-			childs.Close()
+		// Close all child nodes recursively
+		// Make a copy of the slice to avoid modification during iteration
+		childs := make([]*Node, len(n.childs))
+		copy(childs, n.childs)
+		for _, child := range childs {
+			child.Close()
 		}
 	}
 }

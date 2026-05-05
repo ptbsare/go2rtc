@@ -153,6 +153,14 @@ func (c *Conn) MarshalJSON() ([]byte, error) {
 
 func (c *Conn) Close() error {
 	c.closed.Done(nil)
+	// Close all receivers and senders to unblock goroutines
+	// This must be done before pc.Close() to ensure proper cleanup
+	for _, receiver := range c.Receivers {
+		receiver.Close()
+	}
+	for _, sender := range c.Senders {
+		sender.Close()
+	}
 	return c.pc.Close()
 }
 

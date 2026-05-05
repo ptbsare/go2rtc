@@ -259,6 +259,15 @@ func (p *Producer) stop() {
 
 	log.Debug().Msgf("[streams] stop producer url=%s", p.url)
 
+	// Close all receivers and senders before stopping the connection
+	// This ensures that all goroutines are unblocked and can exit
+	for _, receiver := range p.receivers {
+		receiver.Close()
+	}
+	for _, sender := range p.senders {
+		sender.Close()
+	}
+
 	if p.conn != nil {
 		_ = p.conn.Stop()
 		p.conn = nil

@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/pion/rtp"
 )
@@ -172,6 +173,17 @@ func (s *Sender) Close() {
 		s.buf = nil  // prevent writing to closed chan
 	}
 	s.mu.Unlock()
+
+	// Wait for the worker goroutine to finish with a timeout
+	// This prevents goroutine leaks when the consumer is disconnected
+	if s.done != nil {
+		select {
+		case <-s.done:
+			// Worker exited normally
+		case <-time.After(5 * time.Second):
+			// Timeout - worker goroutine is stuck, log and continue
+		}
+	}
 
 	s.Node.Close()
 }
