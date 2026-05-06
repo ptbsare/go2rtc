@@ -186,6 +186,15 @@ func (p *Producer) reconnect(workerID, retry int) {
 
 	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, p.url)
 
+	// Stop the previous connection BEFORE attempting to reconnect.
+	// This ensures the old socket is closed and the old worker goroutine exits.
+	// For cs2 protocol, the camera may not respond to new connection requests
+	// if the old connection is still active.
+	if p.conn != nil {
+		_ = p.conn.Stop()
+		p.conn = nil
+	}
+
 	conn, err := GetProducer(p.url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
@@ -256,8 +265,6 @@ func (p *Producer) reconnect(workerID, retry int) {
 		}
 	}
 
-	// stop previous connection after moving tracks (fix ghost exec/ffmpeg)
-	_ = p.conn.Stop()
 	// swap connections
 	p.conn = conn
 

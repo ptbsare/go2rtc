@@ -130,103 +130,85 @@ const timestamp40ms = 48000 * 0.040
 func (p *Producer) Start() error {
 	var audioTS uint32
 
-	type packetResult struct {
-		pkt *Packet
-		err error
-	}
-	pktCh := make(chan packetResult, 1)
-
-	go func() {
-		for {
-			_ = p.client.SetDeadline(time.Now().Add(30 * time.Second))
-			pkt, err := p.client.ReadPacket()
-			if err != nil {
-				select {
-				case pktCh <- packetResult{err: err}:
-				default:
-				}
-				return
-			}
-			select {
-			case pktCh <- packetResult{pkt: pkt}:
-			default:
-				return
-			}
-		}
-	}()
-
 	for {
-		select {
-		case res := <-pktCh:
-			if res.err != nil {
-				return res.err
+		_ = p.client.SetDeadline(time.Now().Add(10 * time.Second))
+		pkt, err := p.client.ReadPacket()
+		if err != nil {
+			return err
+		}
+
+		p.Recv += len(pkt.Payload)
+
+		// TODO: rewrite this
+		var name string
+		var pkt2 *core.Packet
+
+		switch pkt.CodecID {
+		case codecH264, codecH265:
+			pkt2 = &core.Packet{
+				Header: rtp.Header{
+					SequenceNumber: uint16(pkt.Sequence),
+					Timestamp:      TimeToRTP(pkt.Timestamp, 90000),
+				},
+				Payload: annexb.EncodeToAVCC(pkt.Payload),
 			}
-			pkt := res.pkt
-
-			p.Recv += len(pkt.Payload)
-
-			var name string
-			var pkt2 *core.Packet
-
-			switch pkt.CodecID {
-			case codecH264, codecH265:
-				pkt2 = &core.Packet{
-					Header: rtp.Header{
-						SequenceNumber: uint16(pkt.Sequence),
-						Timestamp:      TimeToRTP(pkt.Timestamp, 90000),
-					},
-					Payload: annexb.EncodeToAVCC(pkt.Payload),
-				}
-				if pkt.CodecID == codecH264 {
-					name = core.CodecH264
-				} else {
-					name = core.CodecH265
-				}
-			case codecPCMA:
-				name = core.CodecPCMA
-				pkt2 = &core.Packet{
-					Header: rtp.Header{
-						Version:        2,
-						Marker:         true,
-						SequenceNumber: uint16(pkt.Sequence),
-						Timestamp:      audioTS,
-					},
-					Payload: pkt.Payload,
-				}
-				audioTS += uint32(len(pkt.Payload))
-			case codecOPUS:
-				name = core.CodecOpus
-				pkt2 = &core.Packet{
-					Header: rtp.Header{
-						Version:        2,
-						Marker:         true,
-						SequenceNumber: uint16(pkt.Sequence),
-						Timestamp:      audioTS,
-					},
-					Payload: pkt.Payload,
-				}
-				audioTS += timestamp40ms
+			if pkt.CodecID == codecH264 {
+				name = core.CodecH264
+			} else {
+				name = core.CodecH265
 			}
-
-			for _, recv := range p.Receivers {
-				if recv.Codec.Name == name {
-					recv.WriteRTP(pkt2)
-					break
-				}
+		case codecPCMA:
+			name = core.CodecPCMA
+			pkt2 = &core.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					Marker:         true,
+					SequenceNumber: uint16(pkt.Sequence),
+					Timestamp:      audioTS,
+				},
+				Payload: pkt.Payload,
 			}
+			audioTS += uint32(len(pkt.Payload))
+		case codecOPUS:
+			name = core.CodecOpus
+			pkt2 = &core.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					Marker:         true,
+					SequenceNumber: uint16(pkt.Sequence),
+					Timestamp:      audioTS,
+				},
+				Payload: pkt.Payload,
+			}
+			// known cameras sends packets with 40ms long
+			audioTS += timestamp40ms
+		}
 
-		case <-time.After(35 * time.Second):
-			return fmt.Errorf("xiaomi: no data received for 35s, triggering reconnect")
+		for _, recv := range p.Receivers {
+			if recv.Codec.Name == name {
+				recv.WriteRTP(pkt2)
+				break
+			}
 		}
 	}
 }
 
 func (p *Producer) Stop() error {
+	// Stop the client first to unblock any pending ReadPacket.
+	// Note: StopMedia may fail if the connection is already broken,
+	// but we still need to close the underlying socket below.
 	_ = p.client.StopMedia()
-	_ = p.client.Close()
+	
+	// Close the underlying connection (cs2.Conn or tutk.Conn).
+	// This will unblock the worker goroutine that is reading from the socket.
+	// We need to call Close on the embedded Conn interface.
+	_ = p.client.Conn.Close()
+	
+	// Stop the connection (closes receivers/senders).
 	return p.Connection.Stop()
 }
 
+// TimeToRTP convert time in milliseconds to RTP time
 func TimeToRTP(timeMS, clockRate uint64) uint32 {
 	return uint32(timeMS * clockRate / 1000)
 }
