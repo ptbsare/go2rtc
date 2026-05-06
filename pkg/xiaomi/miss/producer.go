@@ -131,7 +131,9 @@ func (p *Producer) Start() error {
 	var audioTS uint32
 
 	for {
-		_ = p.client.SetDeadline(time.Now().Add(10 * time.Second))
+		// Use a reasonable read timeout - if camera stops sending data,
+		// we should detect it and trigger a reconnect via the error path
+		_ = p.client.SetDeadline(time.Now().Add(30 * time.Second))
 		pkt, err := p.client.ReadPacket()
 		if err != nil {
 			return err
@@ -194,7 +196,11 @@ func (p *Producer) Start() error {
 }
 
 func (p *Producer) Stop() error {
+	// Stop the client first to unblock any pending ReadPacket
 	_ = p.client.StopMedia()
+	// Close the underlying connection to unblock all goroutines
+	_ = p.client.Close()
+	// Stop the connection (closes receivers/senders)
 	return p.Connection.Stop()
 }
 

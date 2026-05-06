@@ -72,7 +72,21 @@ func NewClient(rawURL string) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{Conn: conn, key: key, model: model}, nil
+	client := &Client{Conn: conn, key: key, model: model}
+	// Start a background goroutine to consume command channel messages
+	// This prevents the command channel buffer from filling up and blocking
+	go client.consumeCommands()
+	return client, nil
+}
+
+// consumeCommands continuously reads and discards command channel messages
+// to prevent the command channel buffer from filling up
+func (c *Client) consumeCommands() {
+	for {
+		if _, _, err := c.Conn.ReadCommand(); err != nil {
+			return
+		}
+	}
 }
 
 type Client struct {

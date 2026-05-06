@@ -153,15 +153,31 @@ func (c *Conn) MarshalJSON() ([]byte, error) {
 
 func (c *Conn) Close() error {
 	c.closed.Done(nil)
-	// Close all receivers and senders to unblock goroutines
-	// This must be done before pc.Close() to ensure proper cleanup
+	
+	// First, stop all sender handlers to prevent them from writing to the closed PeerConnection
+	// This must be done before pc.Close() to avoid blocking on WriteRTP to a closed track
+	for _, sender := range c.Senders {
+		// Replace the handler with a no-op to prevent further processing
+		if sender.Node.Output != nil {
+			sender.Node.Output = func(packet *core.Packet) {
+				// no-op: PeerConnection is closing, discard packets
+			}
+		}
+	}
+	
+	// Close the PeerConnection first to unblock any pending I/O
+	_ = c.pc.Close()
+	
+	// Now close all receivers and senders
+	// The sender worker goroutines should exit quickly since their Output is now a no-op
 	for _, receiver := range c.Receivers {
 		receiver.Close()
 	}
 	for _, sender := range c.Senders {
 		sender.Close()
 	}
-	return c.pc.Close()
+	
+	return nil
 }
 
 func (c *Conn) AddCandidate(candidate string) error {

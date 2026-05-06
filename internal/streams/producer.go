@@ -188,8 +188,9 @@ func (p *Producer) reconnect(workerID, retry int) {
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
 
-		timeout := time.Minute
-		if retry < 5 {
+		// More aggressive retry: start with 1s, cap at 30s
+		timeout := time.Second * 30
+		if retry < 3 {
 			timeout = time.Second
 		} else if retry < 10 {
 			timeout = time.Second * 5
