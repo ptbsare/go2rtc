@@ -130,81 +130,103 @@ const timestamp40ms = 48000 * 0.040
 func (p *Producer) Start() error {
 	var audioTS uint32
 
+	type packetResult struct {
+		pkt *Packet
+		err error
+	}
+	pktCh := make(chan packetResult, 1)
+
+	go func() {
+		for {
+			_ = p.client.SetDeadline(time.Now().Add(30 * time.Second))
+			pkt, err := p.client.ReadPacket()
+			if err != nil {
+				select {
+				case pktCh <- packetResult{err: err}:
+				default:
+				}
+				return
+			}
+			select {
+			case pktCh <- packetResult{pkt: pkt}:
+			default:
+				return
+			}
+		}
+	}()
+
 	for {
-		// Use a reasonable read timeout - if camera stops sending data,
-		// we should detect it and trigger a reconnect via the error path
-		_ = p.client.SetDeadline(time.Now().Add(30 * time.Second))
-		pkt, err := p.client.ReadPacket()
-		if err != nil {
-			return err
-		}
+		select {
+		case res := <-pktCh:
+			if res.err != nil {
+				return res.err
+			}
+			pkt := res.pkt
 
-		p.Recv += len(pkt.Payload)
+			p.Recv += len(pkt.Payload)
 
-		// TODO: rewrite this
-		var name string
-		var pkt2 *core.Packet
+			var name string
+			var pkt2 *core.Packet
 
-		switch pkt.CodecID {
-		case codecH264, codecH265:
-			pkt2 = &core.Packet{
-				Header: rtp.Header{
-					SequenceNumber: uint16(pkt.Sequence),
-					Timestamp:      TimeToRTP(pkt.Timestamp, 90000),
-				},
-				Payload: annexb.EncodeToAVCC(pkt.Payload),
+			switch pkt.CodecID {
+			case codecH264, codecH265:
+				pkt2 = &core.Packet{
+					Header: rtp.Header{
+						SequenceNumber: uint16(pkt.Sequence),
+						Timestamp:      TimeToRTP(pkt.Timestamp, 90000),
+					},
+					Payload: annexb.EncodeToAVCC(pkt.Payload),
+				}
+				if pkt.CodecID == codecH264 {
+					name = core.CodecH264
+				} else {
+					name = core.CodecH265
+				}
+			case codecPCMA:
+				name = core.CodecPCMA
+				pkt2 = &core.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						Marker:         true,
+						SequenceNumber: uint16(pkt.Sequence),
+						Timestamp:      audioTS,
+					},
+					Payload: pkt.Payload,
+				}
+				audioTS += uint32(len(pkt.Payload))
+			case codecOPUS:
+				name = core.CodecOpus
+				pkt2 = &core.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						Marker:         true,
+						SequenceNumber: uint16(pkt.Sequence),
+						Timestamp:      audioTS,
+					},
+					Payload: pkt.Payload,
+				}
+				audioTS += timestamp40ms
 			}
-			if pkt.CodecID == codecH264 {
-				name = core.CodecH264
-			} else {
-				name = core.CodecH265
-			}
-		case codecPCMA:
-			name = core.CodecPCMA
-			pkt2 = &core.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					Marker:         true,
-					SequenceNumber: uint16(pkt.Sequence),
-					Timestamp:      audioTS,
-				},
-				Payload: pkt.Payload,
-			}
-			audioTS += uint32(len(pkt.Payload))
-		case codecOPUS:
-			name = core.CodecOpus
-			pkt2 = &core.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					Marker:         true,
-					SequenceNumber: uint16(pkt.Sequence),
-					Timestamp:      audioTS,
-				},
-				Payload: pkt.Payload,
-			}
-			// known cameras sends packets with 40ms long
-			audioTS += timestamp40ms
-		}
 
-		for _, recv := range p.Receivers {
-			if recv.Codec.Name == name {
-				recv.WriteRTP(pkt2)
-				break
+			for _, recv := range p.Receivers {
+				if recv.Codec.Name == name {
+					recv.WriteRTP(pkt2)
+					break
+				}
 			}
+
+		case <-time.After(35 * time.Second):
+			return fmt.Errorf("xiaomi: no data received for 35s, triggering reconnect")
 		}
 	}
 }
 
 func (p *Producer) Stop() error {
-	// Stop the client first to unblock any pending ReadPacket
 	_ = p.client.StopMedia()
-	// Close the underlying connection to unblock all goroutines
 	_ = p.client.Close()
-	// Stop the connection (closes receivers/senders)
 	return p.Connection.Stop()
 }
 
-// TimeToRTP convert time in milliseconds to RTP time
 func TimeToRTP(timeMS, clockRate uint64) uint32 {
 	return uint32(timeMS * clockRate / 1000)
 }

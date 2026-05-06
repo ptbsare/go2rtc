@@ -173,6 +173,8 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 	p.reconnect(workerID, 0)
 }
 
+const maxReconnectRetries = 30
+
 func (p *Producer) reconnect(workerID, retry int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -187,6 +189,25 @@ func (p *Producer) reconnect(workerID, retry int) {
 	conn, err := GetProducer(p.url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
+
+		if retry >= maxReconnectRetries {
+			log.Error().Msgf("[streams] max retries (%d) reached for url=%s, stopping producer", maxReconnectRetries, p.url)
+			// Close all receivers and senders to unblock goroutines
+			for _, receiver := range p.receivers {
+				receiver.Close()
+			}
+			for _, sender := range p.senders {
+				sender.Close()
+			}
+			if p.conn != nil {
+				_ = p.conn.Stop()
+				p.conn = nil
+			}
+			p.state = stateNone
+			p.receivers = nil
+			p.senders = nil
+			return
+		}
 
 		// More aggressive retry: start with 1s, cap at 30s
 		timeout := time.Second * 30
