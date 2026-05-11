@@ -27,6 +27,11 @@ func Dial(host, transport string) (*Conn, error) {
 			newDataChannel(0, 10), nil, newDataChannel(250, 100), nil,
 		},
 	}
+	// Set a persistent read deadline on the underlying socket so that the
+	// worker goroutine can detect when the camera stops sending data.
+	// Without this, Read() blocks forever and channels are never closed,
+	// which deadlocks the MISS producer and prevents reconnection.
+	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 	go c.worker()
 	return c, nil
 }
